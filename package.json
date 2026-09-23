@@ -1,0 +1,38 @@
+{
+  "name": "docker-logs-agent",
+  "version": "0.1.0",
+  "description": "PI-native docker log viewer: a thin browser UI + a docker-logs skill that PI's agent loop orchestrates.",
+  "main": "server.js",
+  "scripts": {
+    "test": "node --test",
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env server.js",
+    "start:env": "node --env=.env server.js",
+    "setup": "./scripts/setup.sh",
+    "setup:no-start": "./scripts/setup.sh --no-start",
+    "skill:link": "mkdir -p ~/.pi/agent/skills && ln -sfn \"$PWD/skill\" ~/.pi/agent/skills/docker-logs",
+    "skill:unlink": "rm -f ~/.pi/agent/skills/docker-logs"
+  },
+  "keywords": [
+    "docker",
+    "logs",
+    "pi-agent",
+    "pi-package",
+    "skill"
+  ],
+  "author": "",
+  "license": "Zlib",
+  "type": "commonjs",
+  "pi": {
+    "skills": ["./skill"]
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.86.1",
+    "dockerode": "^4.0.12",
+    "express": "^4.22.3",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

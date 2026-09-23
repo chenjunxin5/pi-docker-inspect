@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pi Docker 日志排障 Agent</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"></script>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <style>
+    /* Minimal fallback so the page is at least legible without JS / Tailwind. */
+    html, body { margin: 0; height: 100%; background: #0b1020; color: #e2e8f0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #app-fallback { padding: 2rem; }
+    .log-line { white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1; }
+    .log-stderr { color: #fda4af; }
+    .log-stdout { color: #cbd5e1; }
+    .log-match { background: rgba(250, 204, 21, 0.18); border-left: 3px solid #facc15; padding-left: 4px; }
+    .log-match-hit { color: #facc15; font-weight: 600; }
+    /* 用户手动选中的行(可选中):active 视觉。命中+选中用稍亮 + 左边框加粗。 */
+    .log-selected { background: rgba(16, 185, 129, 0.12); border-left: 3px solid #10b981; padding-left: 4px; }
+    .log-selected.log-match { background: rgba(16, 185, 129, 0.22); border-left: 3px solid #10b981; }
+    .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .status-ok { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.6); }
+    .status-bad { background: #ef4444; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
+    .pulse { animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    pre.answer { white-space: pre-wrap; word-break: break-word; }
+    .grid-layout { display: grid;
+      grid-template-columns: 280px 1fr;
+      grid-template-rows: 56px 1fr 420px;
+      grid-template-areas: "header header" "sidebar logs" "sidebar analysis";
+      height: 100vh; }
+    @media (max-width: 900px) {
+      .grid-layout { grid-template-columns: 1fr; grid-template-rows: 56px auto 1fr 420px;
+        grid-template-areas: "header" "sidebar" "logs" "analysis"; }
+    }
+  </style>
+</head>
+<body>
+  <noscript>
+    <div id="app-fallback">
+      <h1>Pi Docker 日志排障 Agent</h1>
+      <p>This app requires JavaScript. The Tailwind/Alpine bundle is loaded from a CDN; check your network.</p>
+    </div>
+  </noscript>
+
+  <div id="app" class="grid-layout" x-data="loader()" x-cloak>
+
+    <!-- Header -->
+    <header class="col-span-full row-start-1 flex items-center justify-between px-4 border-b border-slate-800 bg-slate-900" style="grid-area: header;">
+      <div class="flex items-center gap-4 min-w-0">
+        <div class="flex items-baseline gap-2 min-w-0">
+          <h1 class="text-[15px] font-semibold tracking-tight text-slate-100 whitespace-nowrap">
+            Pi Docker 日志排障 <span class="text-sky-400">Agent</span>
+          </h1>
+          <span class="text-[10px] uppercase tracking-[0.18em] text-slate-500 hidden sm:inline">
+            PI-native log triage
+          </span>
+        </div>
+        <span class="text-slate-700 hidden sm:inline">|</span>
+        <div class="flex items-center gap-2 text-xs text-slate-400 shrink-0">
+          <span class="status-dot" :class="$store.app.wsReady ? 'status-ok' : 'status-bad'"></span>
+          <span x-text="$store.app.wsReady ? 'connected' : 'disconnected'"></span>
+          <span class="text-slate-500" x-text="$store.app.statusText"></span>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button class="px-3 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700"
+                @click="$store.app.refreshContainers()" :disabled="!$store.app.wsReady">Refresh containers</button>
+      </div>
+    </header>
+
+    <!-- Sidebar: container list -->
+    <aside class="row-start-2 row-span-2 border-r border-slate-800 bg-slate-950 overflow-y-auto scrollbar-thin" style="grid-area: sidebar;">
+      <div class="p-3" x-data="containerList()">
+        <h2 class="text-xs uppercase tracking-wider text-slate-400 mb-2">Containers</h2>
+        <template x-if="containers.length === 0">
+          <p class="text-xs text-slate-500" x-text="loading ? 'Loading…' : 'No running containers'"></p>
+        </template>
+        <ul class="space-y-1">
+          <template x-for="c in containers" :key="c.id">
+            <li>
+                <button class="w-full text-left px-2 py-2 rounded text-xs hover:bg-slate-800 border"
+                        :class="selectedId === c.id ? 'border-sky-500 bg-slate-800' : 'border-transparent'"
+                        @click="select(c)">
+                  <div class="flex items-center justify-between">
+                    <span class="font-medium text-slate-100 truncate" x-text="c.name"></span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-700 text-emerald-50" x-text="c.state"></span>
+                  </div>
+                  <div class="text-slate-400 truncate" x-text="c.image" :title="c.image"></div>
+                  <div class="text-[10px] text-slate-500 truncate" x-text="formatPorts(c.ports)"></div>
+                </button>
+              </li>
+            </template>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Logs view -->
+    <section class="row-start-2 flex flex-col border-b border-slate-800 bg-slate-900 min-h-0" style="grid-area: logs;">
+      <div x-data="logViewer()" class="flex flex-col h-full">
+        <!-- Toolbar -->
+        <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-800 bg-slate-900">
+          <span class="text-xs text-slate-400">Logs:</span>
+          <span class="text-sm font-medium" x-text="selectedName || '—'"></span>
+          <div class="flex-1"></div>
+          <label class="flex items-center gap-1 text-xs text-slate-300">
+            <input type="checkbox" class="accent-sky-500" x-model="followOn" @change="toggleFollow()" />
+            Follow
+          </label>
+          <button class="px-2 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700"
+                  @click="refetch()" :disabled="!selectedId">Reload</button>
+        </div>
+        <!-- Search bar -->
+        <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-800 bg-slate-950">
+          <input type="text" class="flex-1 px-2 py-1 text-xs rounded bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500"
+                 placeholder="Search logs (keyword or regex)"
+                 x-model="searchQuery"
+                 @keyup.enter="doSearch()" />
+          <select class="px-2 py-1 text-xs rounded bg-slate-800 border border-slate-700 text-slate-100"
+                  x-model="searchMode">
+            <option value="substring">substring</option>
+            <option value="regex">regex</option>
+          </select>
+          <label class="text-xs text-slate-400">±</label>
+          <input type="number" min="0" max="10" class="w-12 px-1 py-1 text-xs rounded bg-slate-800 border border-slate-700 text-slate-100"
+                 x-model.number="contextN" />
+          <button class="px-3 py-1 text-xs rounded bg-sky-700 hover:bg-sky-600 disabled:bg-slate-700"
+                  @click="doSearch()" :disabled="!selectedId || !searchQuery || !searchQuery.trim()">Search</button>
+          <button class="px-2 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700"
+                  @click="clearSearch()" :disabled="!matches || !matches.length">Clear search</button>
+          <button class="px-2 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 disabled:bg-slate-700 disabled:text-slate-500"
+                  @click="clearSelection()" :disabled="!selectedLines || !selectedLines.length"
+                  title="清空手动选区(不影响搜索结果)">Clear selection</button>
+        </div>
+        <div class="px-3 py-1 text-[11px] text-slate-400 border-b border-slate-800"
+             x-show="matches !== null">
+          <span x-text="matchesStatus"></span>
+        </div>
+        <!-- Log buffer -->
+        <div class="flex-1 overflow-y-auto scrollbar-thin p-2"
+             x-ref="logScroller"
+             @scroll="onScroll()">
+          <template x-for="(ln, idx) in lines" :key="idx">
+            <div class="log-line cursor-pointer"
+                 :class="lineClass(ln, idx)"
+                 @click="toggleSelect(idx + 1)"
+                 :title="isSelected(idx + 1) ? '点击取消选中' : '点击加入选区'">
+              <span class="mr-1 select-none"
+                    :class="isSelected(idx + 1) ? 'text-emerald-400' : 'text-slate-700'"
+                    x-text="isSelected(idx + 1) ? '✓' : '·'"></span>
+              <span class="text-slate-600 mr-2 select-none" x-text="pad(idx+1)"></span><span x-text="ln"></span>
+            </div>
+          </template>
+          <template x-if="lines.length === 0">
+            <p class="text-xs text-slate-500 px-2">No log lines yet. Click a container and Reload, or enable Follow.</p>
+          </template>
+        </div>
+      </div>
+    </section>
+
+    <!-- Analysis panel -->
+    <section class="row-start-3 flex flex-col bg-slate-950 min-h-0" style="grid-area: analysis;">
+      <div x-data="analysisPanel()" class="flex flex-col h-full">
+        <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-800 bg-slate-900">
+          <h2 class="text-xs uppercase tracking-wider text-slate-400">Ask PI</h2>
+          <span class="text-[11px] text-slate-500" x-text="matchSummary"></span>
+          <template x-if="investigation">
+            <span class="text-[11px] text-sky-400 inline-flex items-center gap-1"
+                  title="持续排障会话:同一容器的后续问题会复用 PI 上下文">
+              session · <span x-text="investigation.containerName || '?'"></span>
+              <button class="text-slate-500 hover:text-rose-400 leading-none"
+                      @click="closeInvestigation()"
+                      title="关闭持续排障会话">×</button>
+            </span>
+          </template>
+          <div class="flex-1"></div>
+          <span class="text-[11px]" :class="streaming ? 'text-emerald-400 pulse' : 'text-slate-500'"
+                x-text="stateLabel"></span>
+        </div>
+        <div class="flex items-start gap-2 px-3 py-2 border-b border-slate-800">
+          <select class="px-2 py-1 text-xs rounded bg-slate-800 border border-slate-700 text-slate-100"
+                  x-model="analysisMode" :disabled="streaming" title="选择 PI 思考等级">
+            <option value="quick">快速分析 · low</option>
+            <option value="deep">深度排障 · high</option>
+          </select>
+          <textarea class="flex-1 px-2 py-1 text-xs rounded bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 resize-none"
+                    rows="2"
+                    placeholder="What is the cadence and likely root cause?"
+                    x-model="userQuestion"
+                    :disabled="streaming"
+                    @keydown.meta.enter="askLLM()"
+                    @keydown.ctrl.enter="askLLM()"></textarea>
+          <div class="flex flex-col gap-1">
+            <button class="px-3 py-1 text-xs rounded bg-sky-700 hover:bg-sky-600 disabled:bg-slate-700"
+                    @click="askLLM()" :disabled="!canAsk">Ask LLM</button>
+            <button class="px-3 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 disabled:bg-slate-700"
+                    @click="abortAsk()" :disabled="!streaming">Abort</button>
+            <button class="px-3 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700"
+                    @click="clearAnswer()">Clear</button>
+          </div>
+        </div>
+        <div x-show="streaming" x-cloak
+             class="px-3 py-2 border-b border-slate-800 bg-slate-900/60">
+          <div class="flex items-start gap-2">
+            <textarea class="flex-1 px-2 py-1 text-xs rounded bg-slate-800 border border-slate-700 text-slate-100 placeholder-slate-500 resize-none"
+                      rows="2"
+                      placeholder="补充信息，例如：这个问题只在发布后出现，重点看 14:30 之后的日志"
+                      x-model="additionalMessage"
+                      @keydown.meta.enter.prevent="addInput('steer')"
+                      @keydown.ctrl.enter.prevent="addInput('steer')"></textarea>
+            <div class="flex flex-col gap-1">
+              <button class="px-3 py-1 text-xs rounded bg-emerald-700 hover:bg-emerald-600 disabled:bg-slate-700"
+                      @click="addInput('steer')" :disabled="!canAddInput"
+                      title="当前工具调用完成后，尽快加入本轮分析">尽快补充</button>
+              <button class="px-3 py-1 text-xs rounded bg-indigo-700 hover:bg-indigo-600 disabled:bg-slate-700"
+                      @click="addInput('followUp')" :disabled="!canAddInput"
+                      title="当前分析结束后，再自动处理这条问题">结束后追问</button>
+            </div>
+          </div>
+          <p x-show="additionalStatus" class="mt-1 text-[11px]"
+             :class="additionalStatusIsError ? 'text-rose-400' : 'text-slate-400'"
+             x-text="additionalStatus"></p>
+          <template x-for="(item, idx) in acceptedInputs" :key="idx">
+            <p class="mt-1 text-[11px] text-slate-500">
+              <span class="text-slate-400" x-text="item.mode === 'steer' ? '已补充：' : '已排队追问：'"></span>
+              <span x-text="item.message"></span>
+            </p>
+          </template>
+        </div>
+        <div class="flex-1 overflow-y-auto scrollbar-thin p-3">
+          <div class="flex items-center justify-end mb-1" x-show="answerText" x-cloak>
+            <button class="text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300"
+                    @click="modalOpen = true"
+                    title="弹窗查看完整回答">Expand ⤢</button>
+          </div>
+          <!-- PI 推理与工具调用 trace:折叠区,ask 进行中自动展开,结束后折叠。
+               open 状态取 traceExpanded (服务端/事件驱动) 与 details 自身 open 的并集,
+               用户手动开/关时由 @toggle 把当前 open 写回,避免被强制覆盖。 -->
+          <details class="mb-2 text-[11px] border border-slate-800 rounded bg-slate-900/40"
+                   x-data="{ userOpen: false }"
+                   :open="userOpen || traceExpanded"
+                   @toggle="userOpen = $event.target.open">
+            <summary class="cursor-pointer px-2 py-1 text-slate-400 select-none flex items-center gap-2">
+              <span>PI 推理与工具调用</span>
+              <span class="text-slate-500" x-text="traceSummary()"></span>
+              <span class="ml-auto text-slate-600"
+                    x-show="streaming && !userOpen"
+                    x-text="traceExpanded ? '· 自动展开' : ''"></span>
+            </summary>
+            <div class="px-2 py-1 space-y-1">
+              <template x-if="thinkingText">
+                <div class="text-slate-400 italic border-l-2 border-slate-700 pl-2 mb-2">
+                  <div class="text-[10px] uppercase tracking-wider text-slate-500 mb-0.5">💭 thinking</div>
+                  <div class="whitespace-pre-wrap break-words" x-text="thinkingText"></div>
+                </div>
+              </template>
+              <template x-if="!toolCalls.length && !thinkingText">
+                <p class="text-slate-600">尚未触发推理或工具调用</p>
+              </template>
+              <template x-for="t in toolCalls" :key="t.toolCallId">
+                <div class="flex items-baseline gap-2 leading-snug"
+                     :class="t.status === 'error' ? 'text-rose-400'
+                       : (t.status === 'ok' ? 'text-emerald-400' : 'text-sky-400')">
+                  <span class="text-slate-500 select-none w-3"
+                        x-text="t.status === 'running' ? '⏳' : (t.status === 'error' ? '✗' : '✓')"></span>
+                  <span class="font-medium shrink-0" x-text="t.toolName"></span>
+                  <span class="text-slate-500 truncate flex-1"
+                        :title="JSON.stringify(t.args)"
+                        x-text="t.argsSummary || '∅'"></span>
+                  <span class="text-slate-600 shrink-0"
+                        x-text="t.durationMs != null ? (t.durationMs/1000).toFixed(2)+'s' : '…'"></span>
+                </div>
+              </template>
+            </div>
+          </details>
+          <pre class="answer text-xs text-slate-100" x-text="answerText"></pre>
+          <template x-if="!answerText && !streaming && state === 'idle'">
+            <p class="text-xs text-slate-500">Click <strong>Search</strong> on a container, then ask a question about the matched lines.</p>
+          </template>
+          <template x-if="state === 'error'">
+            <p class="text-xs text-rose-400" x-text="errorMessage"></p>
+          </template>
+        </div>
+
+        <!-- 全屏答案 Modal：放在 panel 的 x-data 子树里,共享 modalOpen / answerText / stateLabel 状态。
+             用 position: fixed 视觉上浮在 grid 之上,z-index 提到 50 -->
+        <div x-show="modalOpen" x-cloak
+             @keydown.escape.window="modalOpen = false"
+             @click.self="modalOpen = false"
+             class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+             role="dialog" aria-modal="true" aria-label="PI 完整回答">
+          <div class="bg-slate-900 border border-slate-700 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl"
+               @click.stop>
+            <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+              <h3 class="text-sm text-slate-200 font-medium">PI 完整回答</h3>
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] text-slate-500" x-text="stateLabel"></span>
+                <button class="text-xs px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200"
+                        @click="copyAnswer()"
+                        title="复制全文到剪贴板">Copy</button>
+                <button class="text-slate-400 hover:text-rose-400 text-lg leading-none w-7 h-7 flex items-center justify-center rounded hover:bg-slate-800"
+                        @click="modalOpen = false"
+                        title="关闭 (Esc)">×</button>
+              </div>
+            </div>
+            <pre class="flex-1 overflow-y-auto scrollbar-thin p-4 text-[13px] leading-relaxed text-slate-100 whitespace-pre-wrap break-words"
+                 x-text="answerText"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script src="/app.js"></script>
+  <style>[x-cloack],[x-cloak]{display:none!important;}</style>
+</body>
+</html>

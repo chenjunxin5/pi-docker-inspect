@@ -1,0 +1,38 @@
+{
+  "ai_builder_celery": {
+    "repo": "https://gitee.com/smilechenjx/ai-builder-agent.git",
+    "branch": "main",
+    "localPath": "~/projects/ai-builder-agent",
+    "description": "Celery worker for ai-builder-agent (Python; minimal skeleton — app/, scripts/, alembic/)"
+  },
+  "ai_builder_api": {
+    "repo": "https://gitee.com/smilechenjx/ai-builder-agent.git",
+    "branch": "main",
+    "localPath": "~/projects/ai-builder-agent",
+    "description": "API service for ai-builder-agent (Python; minimal skeleton — app/, scripts/, alembic/)"
+  },
+  "builder-core": {
+    "repo": "https://gitee.com/smilechenjx/builder-core.git",
+    "branch": "main",
+    "localPath": "~/projects/builder-core",
+    "description": "Core service for builder (Python; minimal skeleton — app/, scripts/, alembic/)"
+  },
+  "gen-image-worker": {
+    "repo": "https://gitee.com/smilechenjx/ai-builder-gen-image.git",
+    "branch": "main",
+    "localPath": "~/projects/ai-builder-gen-image",
+    "description": "Image generation worker for ai-builder (Python; minimal skeleton — app/, scripts/, alembic/)"
+  },
+  "shopinsight-celery_worker-1": {
+    "repo": "https://gitee.com/smilechenjx/shopinsight-agent.git",
+    "branch": "subgraph",
+    "localPath": "~/projects/shopinsight-agent",
+    "description": "Celery worker for shopinsight-agent (Python; minimal skeleton — app/, scripts/, alembic/)"
+  },
+  "shopinsight-api-1": {
+    "repo": "https://gitee.com/smilechenjx/shopinsight-agent.git",
+    "branch": "subgraph",
+    "localPath": "~/projects/shopinsight-agent",
+    "description": "API service for shopinsight-agent (Python; minimal skeleton — app/, scripts/, alembic/)"
+  }
+}
